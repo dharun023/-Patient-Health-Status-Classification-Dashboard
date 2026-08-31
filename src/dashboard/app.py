@@ -374,9 +374,9 @@ with col_b2:
     else:
         st.info("No Rh Typing data available for current filters.")
 
-st.subheader("📋 Patient Details")
-display_cols = [c for c in ["patient_id", "name", "age", "gender", "age_group", "test_name", "result_num", "ref_low", "ref_high", "target", "numeric_status"] if c in df_filtered.columns]
-st.dataframe(df_filtered[display_cols], use_container_width=True)
+# st.subheader("📋 Patient Details")
+# display_cols = [c for c in ["patient_id", "name", "age", "gender", "age_group", "test_name", "result_num", "ref_low", "ref_high", "target", "numeric_status"] if c in df_filtered.columns]
+# st.dataframe(df_filtered[display_cols], use_container_width=True)
 
 # st.subheader("🔍 Individual Patient View")
 # if "unique_ID" in df_filtered:
