@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
 
-# Ensure project root is in path if you run from anywhere
 project_root = Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -13,549 +12,286 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-# -------------------------
-# Paths (adjust if needed)
-# -------------------------
 DATA_PATH = project_root / "data" / "Feature engineered Dataset.xlsx"
-ID_REPORT_PATH = project_root / "data" / "SRD Report with unique ID for patient.xlsx"
 MODEL_PATH = project_root / "models" / "patient_status_model.pkl"
+FINAL_MERGED_PATH = project_root / "data" / "Final Merged data.xlsx"
+SELF_PRESCRIBED = "Self-Prescribed (Patient)"
+ABNORMAL_VALUES = {"low", "high", "++", "positive", "+", "+++"}
+DISPLAY_COLS = ["patient_id", "name", "age", "gender", "age_group", "test_name", "result_num", "ref_low", "ref_high", "target", "numeric_status"]
 
-# -------------------------
-# Load data and model
-# -------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_excel(DATA_PATH)
-
-@st.cache_data
-def load_final_merged():
-    """Load the raw final merged dataset which includes self‑prescribed tests (doctor_name may be null)."""
-    final_path = project_root / "data" / "Final Merged data.xlsx"
-    df_final = pd.read_excel(final_path)
-    # Fill missing doctor names with a sentinel for self‑prescribed tests
-    df_final["doctor_name_filled"] = df_final["doctor_name"].fillna("Self-Prescribed (Patient)")
-    # Determine abnormality based on target values (adjust if needed)
-    df_final["is_abnormal"] = df_final["target"].isin(["Low", "High", "++"])
-    return df_final
-    try:
-        id_df = pd.read_excel(ID_REPORT_PATH)
-        mapping = id_df[['patient_id', 'unique_ID']].dropna().drop_duplicates(subset=['patient_id'])
-        df = df.merge(mapping, on='patient_id', how='left')
-        df['unique_ID'] = df['unique_ID'].fillna(df['patient_id']) # fallback
-    except Exception as e:
-        print(f"Could not load unique_ID mapping: {e}")
-        df['unique_ID'] = df['patient_id'] # fallback entirely
-    return df
-
+    return pd.read_excel(DATA_PATH)
 
 @st.cache_resource
 def load_model():
     return joblib.load(MODEL_PATH)
 
+@st.cache_data
+def load_final_merged():
+    data = pd.read_excel(FINAL_MERGED_PATH)
+    required = {"doctor_name", "indication_final"}
+    missing = required - set(data.columns)
+    if missing:
+        raise ValueError(f"Final Merged data is missing columns: {sorted(missing)}")
+    data["doctor_name_filled"] = data["doctor_name"].fillna(SELF_PRESCRIBED)
+    indication = data["indication_final"].astype("string").str.strip().str.lower().fillna("")
+    data["is_abnormal"] = indication.apply(lambda value: any(token in value for token in ABNORMAL_VALUES))
+    data["cohort"] = np.where(data["doctor_name_filled"].eq(SELF_PRESCRIBED), "Self-Prescribed", "Ordered by Doctor")
+    return data
 
 try:
     df = load_data()
     model = load_model()
-except Exception as e:
-    st.error(f"Error loading data or model: {e}")
+except Exception as exc:
+    st.error(f"Error loading data or model: {exc}")
     st.stop()
 
-# -------------------------
-# Page config and title
-# -------------------------
-st.set_page_config(page_title="Patient Health Dashboard", layout="wide")
-st.title("🏥 Patient Health Status Classification + Dashboard")
+st.set_page_config(page_title="Clinical Diagnostic Laboratory Dashboard", layout="wide")
+st.title("🏥 Dashboard Based on Clinical Diagnostic Laboratory")
 
-# -------------------------
-# Sidebar: upload + filters
-# -------------------------
 st.sidebar.header("Upload New Data (optional)")
-uploaded = st.sidebar.file_uploader(
-    "Upload CSV or Excel (raw or engineered)",
-    type=["csv", "xlsx"],
-)
-
+uploaded = st.sidebar.file_uploader("Upload CSV or Excel (raw or engineered)", type=["csv", "xlsx"])
 if uploaded is not None:
     try:
-        if uploaded.name.endswith(".csv"):
-            uploaded_df = pd.read_csv(uploaded)
-        else:
-            uploaded_df = pd.read_excel(uploaded)
-
-        # If uploaded file is raw, you can engineer features here later.
-        # For now, assume it already has required columns.
+        uploaded_df = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
         df = pd.concat([df, uploaded_df], ignore_index=True)
         st.sidebar.success("New data appended successfully.")
-    except Exception as e:
-        st.sidebar.error(f"Error loading uploaded file: {e}")
+    except Exception as exc:
+        st.sidebar.error(f"Error loading uploaded file: {exc}")
 
 st.sidebar.header("Filters")
+def get_options(column):
+    return sorted(df[column].dropna().unique().tolist()) if column in df.columns else []
 
-# Available filter columns (adjust if your column names differ)
-test_options = sorted(df["test_name"].dropna().unique().tolist())
-doctor_options = sorted(df["doctor_name"].dropna().unique().tolist())
-gender_options = sorted(df["gender"].dropna().unique().tolist())
-age_group_options = sorted(df["age_group"].dropna().unique().tolist())
+test_options = get_options("test_name")
+doctor_options = get_options("doctor_name")
+gender_options = get_options("gender")
+age_group_options = get_options("age_group")
+selected_tests = st.sidebar.multiselect("Test", test_options, default=test_options)
+selected_doctors = st.sidebar.multiselect("Doctor", doctor_options, default=doctor_options)
+selected_genders = st.sidebar.multiselect("Gender", gender_options, default=gender_options)
+selected_age_groups = st.sidebar.multiselect("Age Group", age_group_options, default=age_group_options)
 
-selected_tests = st.sidebar.multiselect(
-    "Test",
-    options=test_options,
-    default=test_options,
-)
-
-selected_doctors = st.sidebar.multiselect(
-    "Doctor",
-    options=doctor_options,
-    default=doctor_options,
-)
-
-selected_genders = st.sidebar.multiselect(
-    "Gender",
-    options=gender_options,
-    default=gender_options,
-)
-
-selected_age_groups = st.sidebar.multiselect(
-    "Age Group",
-    options=age_group_options,
-    default=age_group_options,
-)
-
-# Apply filters
-mask = (
-    df["test_name"].isin(selected_tests)
-    & df["doctor_name"].isin(selected_doctors)
-    & df["gender"].isin(selected_genders)
-    & df["age_group"].isin(selected_age_groups)
-)
-
-df_filtered = df[mask].copy()
-
-# -------------------------
-# Summary cards
-# -------------------------
-total_records = len(df_filtered)
-unique_patients = df_filtered["patient_id"].nunique()
-
-# Use 'target' for overall status distribution
-target_counts = df_filtered["target"].value_counts(dropna=False)
-abnormal_classes = [c for c in target_counts.index if c in ["Low", "High", "++"]]
-abnormal_count = sum(target_counts.get(c, 0) for c in abnormal_classes)
-abnormal_pct = (abnormal_count / total_records * 100) if total_records > 0 else 0
-
-# Numeric subset
-numeric_df = df_filtered[df_filtered["result_num"].notna()]
-avg_result = numeric_df["result_num"].mean() if len(numeric_df) > 0 else np.nan
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Records", f"{total_records:,}")
-col2.metric("Unique Patients", f"{unique_patients:,}")
-col3.metric("% Abnormal (target)", f"{abnormal_pct:.1f}%")
-col4.metric("Avg Result (numeric)", f"{avg_result:.2f}" if not np.isnan(avg_result) else "N/A")
-
-if len(df_filtered) == 0:
-    st.warning("No data matches the selected filters. Please adjust the filters to view visualizations and patient details.")
+mask = pd.Series(True, index=df.index)
+for column, values in (("test_name", selected_tests), ("doctor_name", selected_doctors), ("gender", selected_genders), ("age_group", selected_age_groups)):
+    if column in df.columns:
+        mask &= df[column].isin(values)
+df_filtered = df.loc[mask].copy()
+if df_filtered.empty:
+    st.warning("No data matches the selected filters.")
     st.stop()
 
-# -------------------------
-# Visualizations
-# -------------------------
-st.subheader("📈 Visualizations")
-
-# 1. Target distribution (pie)
-fig_pie = px.pie(
-    df_filtered,
-    names="target",
-    title="Distribution of Target (indication_final)",
-)
-st.plotly_chart(fig_pie, use_container_width=True)
-
-# 2. Numeric result histogram (for a selected test)
-st.subheader("Numeric Result Distribution")
-
-test_for_hist = st.selectbox(
-    "Select test for numeric histogram",
-    options=sorted(df_filtered["test_name"].dropna().unique()),
-)
-
-subset_test = df_filtered[df_filtered["test_name"] == test_for_hist]
-numeric_subset = subset_test[subset_test["result_num"].notna()]
-
-if len(numeric_subset) > 0:
-    fig_hist = px.histogram(
-        numeric_subset,
-        x="result_num",
-        color="target",
-        title=f"{test_for_hist} - Result Num Distribution by Target",
-        labels={"result_num": "result_num"},
-    )
-    st.plotly_chart(fig_hist, use_container_width=True)
+if "target" in df_filtered.columns:
+    abnormal_mask = df_filtered["target"].astype("string").str.strip().str.lower().isin(ABNORMAL_VALUES)
 else:
-    st.info(f"No numeric results available for {test_for_hist}.")
+    abnormal_mask = pd.Series(False, index=df_filtered.index)
+total_records = len(df_filtered)
+unique_patients = df_filtered["patient_id"].nunique() if "patient_id" in df_filtered.columns else 0
+avg_result = df_filtered.loc[df_filtered["result_num"].notna(), "result_num"].mean() if "result_num" in df_filtered.columns else np.nan
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Records", f"{total_records:,}")
+col2.metric("Total Patient ID", f"{unique_patients:,}")
+col3.metric("% Abnormal", f"{abnormal_mask.mean() * 100:.1f}%")
+col4.metric("Avg Result", f"{avg_result:.2f}" if pd.notna(avg_result) else "N/A")
 
-# 3. Average result by gender (for selected test)
-if len(numeric_subset) > 0:
-    avg_by_gender = (
-        numeric_subset
-        .groupby("gender", as_index=False)["result_num"]
-        .mean()
-    )
-    fig_bar_gender = px.bar(
-        avg_by_gender,
-        x="gender",
-        y="result_num",
-        title=f"{test_for_hist} - Average Result by Gender",
-        labels={"result_num": "Avg result_num"},
-    )
-    st.plotly_chart(fig_bar_gender, use_container_width=True)
+st.subheader("📈 Visualizations")
+st.markdown("Distribution of Results")
+ALLOWED_TARGET_VALUES = ["Normal", "Low", "High", "Positive", "Negative", "Nil"]
+df_target_chart = df_filtered.copy()
+df_target_chart["target_clean"] = df_target_chart["target"].astype(str).str.strip()
+df_target_chart = df_target_chart[df_target_chart["target_clean"].isin(ALLOWED_TARGET_VALUES)]
+available_target_values = [value for value in ALLOWED_TARGET_VALUES if value in df_target_chart["target_clean"].unique()]
+selected_targets_for_pie = st.multiselect("Choose target values to display", available_target_values, default=[], key="optimized_target_pie_filter")
+if selected_targets_for_pie:
+    target_counts = df_target_chart[df_target_chart["target_clean"].isin(selected_targets_for_pie)]["target_clean"].value_counts().reindex(selected_targets_for_pie, fill_value=0).rename_axis("Target").reset_index(name="Count")
+    fig_pie = px.pie(target_counts, names="Target", values="Count", title="Distribution of Selected Target Values", color="Target", color_discrete_map={"Normal": "#2E8B57", "Low": "#1E88E5", "High": "#E53935", "Positive": "#D81B60", "Negative": "#43A047", "Nil": "#757575"}, hole=0.3)
+    st.plotly_chart(fig_pie, width="stretch")
+else:
+    st.info("Select one or more valid target categories to display the pie chart.")
 
-# 4. Abnormal rate by doctor
-st.subheader("Abnormal Rate by Doctor")
-
-df_doctor = df_filtered.copy()
-df_doctor["is_abnormal_target"] = df_doctor["target"].isin(["Low", "High", "++"])
-
-doctor_stats = (
-    df_doctor
-    .groupby("doctor_name", as_index=False, dropna=False)
-    .agg(
-        total=("is_abnormal_target", "count"),
-        abnormal=("is_abnormal_target", "sum"),
-    )
-)
-doctor_stats["abnormal_rate"] = doctor_stats["abnormal"] / doctor_stats["total"] * 100
-
-fig_doctor = px.bar(
-    doctor_stats.sort_values("abnormal_rate", ascending=False),
-    x="doctor_name",
-    y="abnormal_rate",
-    title="Abnormal Rate by Doctor (based on target)",
-    labels={"abnormal_rate": "Abnormal Rate (%)", "doctor_name": "Doctor"},
-)
-st.plotly_chart(fig_doctor, use_container_width=True)
-
-# -------------------------
-# Advanced Analytics & Insights
-# -------------------------
-st.subheader("🧠 Advanced Analytics & Insights")
-
-col_g1, col_g2 = st.columns(2)
-
-with col_g1:
-    # 0. Gender Gap Analysis
-    st.markdown("**Overall Abnormality by Gender**")
-    if "gender" in df_filtered.columns:
-        df_gender = df_filtered.copy()
-        df_gender["is_abnormal"] = df_gender["target"].isin(["Low", "High", "++"])
-        gen_stats = df_gender.groupby("gender", as_index=False).agg(
-            total=("is_abnormal", "count"),
-            abnormal=("is_abnormal", "sum")
-        )
-        gen_stats["abnormal_rate"] = (gen_stats["abnormal"] / gen_stats["total"]) * 100
-        fig_gender = px.bar(
-            gen_stats, x="gender", y="abnormal_rate", color="gender",
-            title="Abnormality Rate by Gender",
-            labels={"abnormal_rate": "Abnormal Rate (%)", "gender": "Gender"}
-        )
-        st.plotly_chart(fig_gender, use_container_width=True)
+st.subheader("Numeric Result Distribution")
+if {"test_name", "result_num"}.issubset(df_filtered.columns):
+    histogram_tests = sorted(df_filtered["test_name"].dropna().unique())
+    test_for_hist = st.selectbox("Select test for numeric histogram", histogram_tests, key="numeric_histogram_test")
+    numeric_subset = df_filtered[(df_filtered["test_name"] == test_for_hist) & df_filtered["result_num"].notna()].copy()
+    if not numeric_subset.empty:
+        fig_hist = px.histogram(numeric_subset, x="result_num", color="target", title=f"{test_for_hist} - Result Distribution by Target", labels={"result_num": "Test Result", "count": "Number of Records", "target": "Target Status"}, barmode="overlay", opacity=0.7)
+        fig_hist.update_yaxes(rangemode="tozero", title="Number of Records", showline=True, linecolor="black", zeroline=True, zerolinecolor="black", zerolinewidth=2)
+        fig_hist.update_xaxes(showline=True, linecolor="black")
+        fig_hist.update_layout(bargap=0.05, legend_title_text="Target Status")
+        st.plotly_chart(fig_hist, width="stretch")
     else:
-        st.info("Gender data not available.")
+        st.info(f"No numeric results available for {test_for_hist}.")
 
+if {"result_num", "gender"}.issubset(df_filtered.columns):
+    numeric_subset = df_filtered[df_filtered["result_num"].notna()].copy()
+    if not numeric_subset.empty:
+        avg_by_gender = numeric_subset.groupby("gender", as_index=False)["result_num"].mean()
+        st.plotly_chart(px.bar(avg_by_gender, x="gender", y="result_num", title="Average Result by Gender", labels={"result_num": "Average Result"}), width="stretch")
+
+st.subheader("Abnormal Rate by Doctor")
+df_doctor = df_filtered.copy()
+df_doctor["is_abnormal_target"] = df_doctor["target"].astype("string").str.strip().str.lower().isin(ABNORMAL_VALUES)
+doctor_stats = df_doctor.groupby("doctor_name", as_index=False, dropna=False).agg(total=("is_abnormal_target", "count"), abnormal=("is_abnormal_target", "sum"))
+doctor_stats["abnormal_rate"] = doctor_stats["abnormal"] / doctor_stats["total"] * 100
+st.plotly_chart(px.bar(doctor_stats.sort_values("abnormal_rate", ascending=False), x="doctor_name", y="abnormal_rate", title="Abnormal Rate by Doctor", labels={"abnormal_rate": "Abnormal Rate (%)", "doctor_name": "Doctor"}), width="stretch")
+
+st.subheader("🧠 Advanced Analytics & Insights")
+col_g1, col_g2 = st.columns(2)
+with col_g1:
+    st.markdown("Overall Abnormality by Gender")
+    gender_data = df_filtered.copy()
+    gender_data["is_abnormal"] = gender_data["target"].astype("string").str.strip().str.lower().isin(ABNORMAL_VALUES)
+    gender_stats = gender_data.groupby("gender", as_index=False).agg(total=("is_abnormal", "count"), abnormal=("is_abnormal", "sum"))
+    gender_stats["abnormal_rate"] = gender_stats["abnormal"] / gender_stats["total"] * 100
+    st.plotly_chart(px.bar(gender_stats, x="gender", y="abnormal_rate", color="gender", title="Abnormality Rate by Gender"), width="stretch")
 with col_g2:
-    st.markdown("**💡 Key Data Insights**")
-    st.info("**The 'Sugar Spike'**: Sugar (P.P) tests result in an abnormal finding 86% of the time, making it the highest risk test category.")
-    st.info("**The Senior Vulnerability**: Seniors represent the highest risk demographic with a 37% abnormality rate, closely followed by Teens (35%).")
-    st.info("**The Gender Gap**: Female patients have a significantly higher overall rate of abnormal test results (33.7%) compared to male patients (28.7%).")
-
-st.divider()
+    st.markdown("💡 Key Data Insights")
+    st.info("The Gender Gap: Female patients have a significantly higher overall rate of abnormal test results (33.7%) compared to male patients (28.7%).")
+    st.info("The 'Sugar Spike': Sugar (P.P) tests result in an abnormal finding 86% of the time, making it the highest risk test category.")
+    st.info("The Senior Vulnerability: Seniors represent the highest risk demographic with a 37% abnormality rate, closely followed by Teens (35%).")
+        
 
 colA, colB = st.columns(2)
-
 with colA:
-    # 1. Test Group Abnormality Rate
-    st.markdown("**High-Risk Test Categories**")
-    if "test_group1" in df_filtered.columns:
-        df_tg = df_filtered.copy()
-        df_tg["is_abnormal"] = df_tg["target"].isin(["Low", "High", "++"])
-        tg_stats = df_tg.groupby("test_group1", as_index=False).agg(
-            total=("is_abnormal", "count"),
-            abnormal=("is_abnormal", "sum")
-        )
-        tg_stats = tg_stats[tg_stats["total"] >= 5]
-        tg_stats["abnormal_rate"] = (tg_stats["abnormal"] / tg_stats["total"]) * 100
-        top_tg = tg_stats.sort_values("abnormal_rate", ascending=False).head(10)
-        
-        fig_tg = px.bar(
-            top_tg, x="abnormal_rate", y="test_group1", orientation="h",
-            title="Top 10 Test Groups by Abnormality Rate",
-            labels={"abnormal_rate": "Abnormal Rate (%)", "test_group1": "Test Group"}
-        )
-        fig_tg.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_tg, use_container_width=True)
+    st.markdown("High-Risk Test Categories")
+    if "test_group1" not in df_filtered.columns:
+        st.warning("The `test_group1` column is not available in the filtered dataset.")
     else:
-        st.info("Test group categorization not available.")
-
+        tg = df_filtered[["test_group1", "target"]].copy()
+        tg["test_group1"] = tg["test_group1"].astype("string").str.strip()
+        tg["is_abnormal"] = tg["target"].astype("string").str.strip().str.lower().isin(ABNORMAL_VALUES)
+        tg = tg[tg["test_group1"].notna() & (tg["test_group1"] != "")]
+        if tg.empty:
+            st.info("No valid test-group data is available after the current filters.")
+        else:
+            tg_stats = tg.groupby("test_group1", as_index=False).agg(total=("is_abnormal", "count"), abnormal=("is_abnormal", "sum"))
+            tg_stats["abnormal_rate"] = tg_stats["abnormal"] / tg_stats["total"] * 100
+            top_tg = tg_stats.sort_values(["abnormal_rate", "total"], ascending=[False, False]).head(10)
+            fig_tg = px.bar(top_tg, x="abnormal_rate", y="test_group1", orientation="h", text="abnormal_rate", hover_data=["total", "abnormal"], title="Top 10 Test Groups by Abnormality Rate", labels={"test_group1": "Test Group", "abnormal_rate": "Abnormal Rate (%)"}, color="abnormal_rate", color_continuous_scale="Reds")
+            fig_tg.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+            fig_tg.update_layout(yaxis={"categoryorder": "total ascending"}, xaxis_range=[0, min(110, max(100, top_tg["abnormal_rate"].max() + 10))])
+            st.plotly_chart(fig_tg, width="stretch")
 with colB:
-    # 2. Categorical Outcomes Analysis
-    st.markdown("**Categorical Outcomes Analysis**")
-    categorical_targets = df_filtered[~df_filtered["target"].isin(["Low", "High", "Normal", "++", "Nil", "Borderline"])]
-    if len(categorical_targets) > 0:
-        cat_counts = categorical_targets["target"].value_counts().reset_index()
-        cat_counts.columns = ["target", "count"]
-        fig_cat = px.bar(
-            cat_counts.head(10), x="target", y="count", color="target",
-            title="Frequency of Top Categorical Outcomes (Positive/Negative/etc)",
-            labels={"target": "Outcome", "count": "Frequency"}
-        )
-        st.plotly_chart(fig_cat, use_container_width=True)
+    # st.markdown("Categorical Outcomes Analysis")
+    categorical_df = df_filtered.copy()
+    categorical_df["target_clean"] = categorical_df["target"].astype("string").str.strip()
+    standard_targets = {"low", "high", "normal", "++", "nil", "borderline"}
+    categorical_targets = categorical_df[categorical_df["target_clean"].notna() & (categorical_df["target_clean"] != "") & ~categorical_df["target_clean"].str.lower().isin(standard_targets)]
+    if categorical_targets.empty:
+        st.info("No categorical outcomes are available under the current filters.")
     else:
-        st.info("No categorical outcomes found in the current filtered data.")
+        counts = categorical_targets["target_clean"].value_counts().head(10).rename_axis("target").reset_index(name="count")
+        fig_cat = px.bar(counts, x="target", y="count", color="target", text="count", title="Top 10 Categorical Outcomes", labels={"target": "Outcome", "count": "Number of Records"})
+        fig_cat.update_traces(textposition="outside")
+        fig_cat.update_layout(showlegend=False, xaxis_tickangle=-35, yaxis_rangemode="tozero")
+        st.plotly_chart(fig_cat, width="stretch")
 
 colC, colD = st.columns(2)
-
 with colC:
-    # 3. Doctor Diagnostic Yield (Scatter Plot)
-    st.markdown("**Doctor Diagnostic Yield**")
-    if "doctor_name" in df_filtered.columns and len(doctor_stats) > 0:
-        fig_doc_scatter = px.scatter(
-            doctor_stats, x="total", y="abnormal_rate", hover_name="doctor_name",
-            title="Doctor Testing Volume vs Abnormality Detection Rate",
-            labels={"total": "Total Tests Ordered", "abnormal_rate": "Abnormal Rate (%)"},
-            size="total", color="abnormal_rate", color_continuous_scale="Reds"
-        )
-        med_tests = doctor_stats["total"].median()
-        med_rate = doctor_stats["abnormal_rate"].median()
-        fig_doc_scatter.add_vline(x=med_tests, line_dash="dash", line_color="gray", annotation_text="Median Vol")
-        fig_doc_scatter.add_hline(y=med_rate, line_dash="dash", line_color="gray", annotation_text="Median Rate")
-        st.plotly_chart(fig_doc_scatter, use_container_width=True)
-        st.caption("Top-right quadrant: Doctors ordering many tests AND predicting/finding high abnormality rates.")
-    else:
-        st.info("Doctor stats not available.")
-
+    # st.markdown("Doctor Diagnostic Yield")
+    if not doctor_stats.empty:
+        st.plotly_chart(px.scatter(doctor_stats, x="total", y="abnormal_rate", hover_name="doctor_name", size="total", color="abnormal_rate", title="Testing Volume vs Abnormality Rate", labels={"total": "Total Tests", "abnormal_rate": "Abnormal Rate (%)"}), width="stretch")
 with colD:
-    # 4. Age Group Health Profile
-    st.markdown("**Age Group Health Profile**")
+    # st.markdown("Age Group Health Profile")
     if "age_group" in df_filtered.columns:
-        df_age = df_filtered.copy()
-        df_age["is_abnormal"] = df_age["target"].isin(["Low", "High", "++"])
-        age_stats = df_age.groupby("age_group", as_index=False).agg(
-            total=("is_abnormal", "count"),
-            abnormal=("is_abnormal", "sum")
-        )
-        age_melt = age_stats.melt(id_vars="age_group", value_vars=["total", "abnormal"], var_name="Type", value_name="Count")
-        fig_age = px.bar(
-            age_melt, x="age_group", y="Count", color="Type", barmode="group",
-            title="Total vs Abnormal Results by Age Group",
-            labels={"age_group": "Age Group"}
-        )
-        st.plotly_chart(fig_age, use_container_width=True)
+        age_data = df_filtered.copy()
+        age_data["is_abnormal"] = age_data["target"].astype("string").str.strip().str.lower().isin(ABNORMAL_VALUES)
+        age_stats = age_data.groupby("age_group", as_index=False).agg(total=("is_abnormal", "count"), abnormal=("is_abnormal", "sum"))
+        age_melt = age_stats.melt("age_group", ["total", "abnormal"], var_name="Type", value_name="Count")
+        st.plotly_chart(px.bar(age_melt, x="age_group", y="Count", color="Type", barmode="group", title="Total vs Abnormal Results by Age Group"), width="stretch")
 
-# -------------------------
-# Doctor vs Patient Prediction Analysis (New)
-# -------------------------
-st.markdown("---")
-st.subheader("🩺 Doctor vs Patient Prediction Analysis")
+# st.markdown("---")
+st.subheader("🧑‍⚕️ Doctor vs Patient (Self-Prescribed) Analysis")
+st.caption("Self-prescribed records are rows whose original doctor_name was null. The rate is an observed abnormal-result rate, not a clinical measure of diagnostic accuracy.")
+try:
+    df_merged = load_final_merged()
+    merged_mask = pd.Series(True, index=df_merged.index)
+    for column, values in (("test_name", selected_tests), ("gender", selected_genders), ("age_group", selected_age_groups)):
+        if column in df_merged.columns:
+            merged_mask &= df_merged[column].isin(values)
+    df_vis = df_merged.loc[merged_mask].copy()
+    if df_vis.empty:
+        st.info("No raw records match the current filters.")
+    else:
+        st.markdown("1. Self-Prescribed Outcomes")
+        self_df = df_vis[df_vis["cohort"] == "Self-Prescribed"]
+        if not self_df.empty:
+            self_counts = self_df["is_abnormal"].map({True: "Abnormal", False: "Normal"}).value_counts().reindex(["Normal", "Abnormal"], fill_value=0).rename_axis("Outcome").reset_index(name="Count")
+            st.plotly_chart(px.bar(self_counts, x="Outcome", y="Count", color="Outcome", title="Self-Prescribed: Normal vs Abnormal", color_discrete_map={"Normal": "#4caf50", "Abnormal": "#e53935"}), width="stretch")
+        else:
+            st.info("No self-prescribed records found.")
+        st.markdown("2. Doctor Predictive Performance")
+        doctor_df = df_vis[df_vis["cohort"] == "Ordered by Doctor"]
+        if not doctor_df.empty:
+            doctor_perf = doctor_df.groupby("doctor_name_filled", as_index=False).agg(total_tests=("is_abnormal", "count"), abnormal_tests=("is_abnormal", "sum"))
+            doctor_perf["predictive_ratio"] = doctor_perf["abnormal_tests"] / doctor_perf["total_tests"]
+            doctor_perf["abnormality_rate"] = doctor_perf["predictive_ratio"] * 100
+            min_volume = st.number_input("Minimum tests per doctor", min_value=1, value=5, step=1)
+            ranked = doctor_perf[doctor_perf["total_tests"] >= min_volume].sort_values("predictive_ratio", ascending=False)
+            if ranked.empty:
+                st.info("No doctors meet the selected minimum volume.")
+            else:
+                top_n = st.slider("Doctors to display", 1, min(50, len(ranked)), min(10, len(ranked)))
+                top = ranked.head(top_n)
+                st.plotly_chart(px.bar(top, x="doctor_name_filled", y="abnormality_rate", hover_data=["total_tests", "abnormal_tests", "predictive_ratio"], title="Top Doctors by Abnormality Rate", labels={"doctor_name_filled": "Doctor", "abnormality_rate": "Abnormality Rate (%)"}, color="abnormality_rate", color_continuous_scale="Turbo"), width="stretch")
+                st.dataframe(top, width="stretch", hide_index=True)
+        else:
+            st.info("No doctor-ordered records found.")
+        st.markdown("3. Ultimate Comparison")
+        cohort_stats = df_vis.groupby("cohort", as_index=False).agg(total_tests=("is_abnormal", "count"), abnormal_tests=("is_abnormal", "sum"))
+        cohort_stats["abnormality_rate"] = cohort_stats["abnormal_tests"] / cohort_stats["total_tests"] * 100
+        fig_comp = px.bar(cohort_stats, x="cohort", y="abnormality_rate", text="abnormality_rate", title="Abnormality Detection Rate: Doctor vs Patient", labels={"cohort": "Cohort", "abnormality_rate": "Abnormality Rate (%)"}, color="cohort", color_discrete_map={"Ordered by Doctor": "#1976d2", "Self-Prescribed": "#ff9800"})
+        fig_comp.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        st.plotly_chart(fig_comp, width="stretch")
+except Exception as exc:
+    st.error(f"Could not load Doctor vs Patient analysis: {exc}")
 
-# Load the final merged dataset (includes self‑prescribed tests)
-df_merged = load_final_merged()
-# Apply the same filters used for the main view (tests, gender, age group)
-filter_mask = (
-    df_merged["test_name"].isin(selected_tests) &
-    df_merged["gender"].isin(selected_genders) &
-    df_merged["age_group"].isin(selected_age_groups)
-)
-df_vis = df_merged[filter_mask]
-
-# 1️⃣ Self‑prescribed test outcomes (Normal vs Abnormal)
-self_df = df_vis[df_vis["doctor_name_filled"] == "Self-Prescribed (Patient)"]
-if len(self_df) > 0:
-    self_counts = self_df["is_abnormal"].value_counts().rename({True: "Abnormal", False: "Normal"})
-    fig_self = px.bar(
-        self_counts.reset_index(),
-        x="index",
-        y="is_abnormal",
-        labels={"index": "Outcome", "is_abnormal": "Count"},
-        title="Self‑Prescribed Test Outcomes",
-        color="index",
-        color_discrete_map={"Normal": "#4caf50", "Abnormal": "#e53935"},
-    )
-    st.plotly_chart(fig_self, use_container_width=True)
-else:
-    st.info("No self‑prescribed test data after current filters.")
-
-# 2️⃣ Doctor predictive performance (abnormal rate vs volume)
-doctor_df = df_vis[df_vis["doctor_name_filled"] != "Self-Prescribed (Patient)"]
-if len(doctor_df) > 0:
-    doctor_stats = (
-        doctor_df.groupby("doctor_name_filled")
-        .agg(total=("is_abnormal", "count"), abnormal=("is_abnormal", "sum"))
-        .reset_index()
-    )
-    doctor_stats["abnormal_rate"] = doctor_stats["abnormal"] / doctor_stats["total"] * 100
-    fig_doc = px.scatter(
-        doctor_stats,
-        x="total",
-        y="abnormal_rate",
-        size="total",
-        hover_name="doctor_name_filled",
-        title="Doctor Predictive Performance (Abnormal Rate vs Tests Ordered)",
-        labels={"total": "Total Tests Ordered", "abnormal_rate": "Abnormal Rate (%)"},
-        color="abnormal_rate",
-        color_continuous_scale="Turbo",
-    )
-    st.plotly_chart(fig_doc, use_container_width=True)
-else:
-    st.info("No doctor data after current filters.")
-
-# 3️⃣ Overall comparison: Doctor vs Self‑Prescribed abnormality rates
-comp_df = (
-    df_vis.groupby("doctor_name_filled")["is_abnormal"]
-    .agg(total="count", abnormal="sum")
-    .reset_index()
-)
-comp_df["abnormal_rate"] = comp_df["abnormal"] / comp_df["total"] * 100
-fig_comp = px.bar(
-    comp_df,
-    x="doctor_name_filled",
-    y="abnormal_rate",
-    title="Abnormality Detection Rate – Doctor vs Self‑Prescribed",
-    labels={"doctor_name_filled": "Doctor (or Self‑Prescribed)", "abnormal_rate": "% Abnormal"},
-    color="doctor_name_filled",
-    color_discrete_map={"Self-Prescribed (Patient)": "#ffb74d"},
-)
-st.plotly_chart(fig_comp, use_container_width=True)
-
-        st.info("Age group data not available.")
-
-# -------------------------
-# Blood Group Analysis (New)
-# -------------------------
-st.markdown("---")
+# st.markdown("---")
 st.subheader("🩸 Blood Group & Rh Typing Analysis")
-
 col_b1, col_b2 = st.columns(2)
-
 with col_b1:
     df_bg = df_filtered[df_filtered["test_name"] == "Grouping"].copy()
-    if len(df_bg) > 0:
-        # Clean the target strings (remove backticks, trim whitespace, make uppercase)
+    if not df_bg.empty:
         df_bg["bg_clean"] = df_bg["target"].astype(str).str.replace("`", "").str.strip().str.upper()
-        # Filter out invalid blood group texts like 'NORMAL'
-        df_bg = df_bg[df_bg["bg_clean"] != "NORMAL"] 
-        
-        bg_counts = df_bg["bg_clean"].value_counts().reset_index()
-        bg_counts.columns = ["Blood Group", "Count"]
-        
-        fig_bg = px.pie(
-            bg_counts, names="Blood Group", values="Count", hole=0.4,
-            title="Blood Group Distribution"
-        )
-        st.plotly_chart(fig_bg, use_container_width=True)
+        df_bg = df_bg[df_bg["bg_clean"] != "NORMAL"]
+        counts = df_bg["bg_clean"].value_counts().rename_axis("Blood Group").reset_index(name="Count")
+        st.plotly_chart(px.pie(counts, names="Blood Group", values="Count", hole=0.4, title="Blood Group Distribution"), width="stretch")
     else:
         st.info("No Blood Grouping data available for current filters.")
-
 with col_b2:
     df_rh = df_filtered[df_filtered["test_name"] == "Rh Typing"].copy()
-    if len(df_rh) > 0:
+    if not df_rh.empty:
         df_rh["rh_clean"] = df_rh["target"].astype(str).str.strip().str.upper()
-        rh_counts = df_rh["rh_clean"].value_counts().reset_index()
-        rh_counts.columns = ["Rh Factor", "Count"]
-        
-        fig_rh = px.pie(
-            rh_counts, names="Rh Factor", values="Count", hole=0.4,
-            title="Rh Factor Distribution",
-            color="Rh Factor",
-            color_discrete_map={"POSITIVE": "#636efa", "NEGATIVE": "#ef553b"}
-        )
-        st.plotly_chart(fig_rh, use_container_width=True)
+        counts = df_rh["rh_clean"].value_counts().rename_axis("Rh Factor").reset_index(name="Count")
+        st.plotly_chart(px.pie(counts, names="Rh Factor", values="Count", hole=0.4, title="Rh Factor Distribution"), width="stretch")
     else:
         st.info("No Rh Typing data available for current filters.")
 
-# -------------------------
-# Patient table
-# -------------------------
-st.subheader("📋 Patient Details")
-
-display_cols = [
-    "patient_id",
-    "name",
-    "age",
-    "gender",
-    "age_group",
-    "test_name",
-    "result_num",
-    "ref_low",
-    "ref_high",
-    "target",
-    "numeric_status",
-]
-
-# Only show columns that exist
-display_cols = [c for c in display_cols if c in df_filtered.columns]
-st.dataframe(df_filtered[display_cols], use_container_width=True)
-
-# -------------------------
-# Individual patient view
-# -------------------------
 st.subheader("🔍 Individual Patient View")
-
-unique_ids = sorted(df_filtered["unique_ID"].dropna().astype(str).unique().tolist())
-selected_uid = st.selectbox("Select Unique Patient ID", options=unique_ids)
-
-patient_rows = df_filtered[df_filtered["unique_ID"].astype(str) == selected_uid]
-
-if len(patient_rows) > 0:
-    # Show summary for first test of this patient
-    row = patient_rows.iloc[0]
-
-    st.write(f"**Patient:** {row.get('name', 'N/A')} (ID: {selected_uid})")
-    st.write(f"**Age:** {row.get('age', 'N/A')} | **Gender:** {row.get('gender', 'N/A')}")
-    st.write(f"**Test:** {row.get('test_name', 'N/A')}")
-
-    if "result_num" in row and not pd.isna(row["result_num"]):
-        if "ref_low" in row and "ref_high" in row and not pd.isna(row["ref_low"]) and not pd.isna(row["ref_high"]):
-            # Determine range boundaries for gauge chart
-            r_val = row["result_num"]
-            r_low = row["ref_low"]
-            r_high = row["ref_high"]
-            
-            min_val = min(0, r_val, r_low)
-            max_val = max(r_val, r_high)
-            upper_bound = max_val + (max_val - min_val) * 0.2 if max_val != min_val else max_val + 10
-
-            fig_patient = go.Figure(go.Indicator(
-                mode="number+gauge",
-                value=r_val,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': f"<b>{row['test_name']}</b>"},
-                gauge={
-                    'shape': "bullet",
-                    'axis': {'range': [min_val, upper_bound]},
-                    'threshold': {
-                        'line': {'color': "black", 'width': 2},
-                        'thickness': 0.75,
-                        'value': r_val
-                    },
-                    'steps': [
-                        {'range': [min_val, r_low], 'color': "#ffcccb"},     # below normal
-                        {'range': [r_low, r_high], 'color': "#e6f4ea"},      # normal range
-                        {'range': [r_high, upper_bound], 'color': "#ffcccb"} # above normal
-                    ],
-                    'bar': {'color': "royalblue", 'thickness': 0.25}
-                }
-            ))
-            fig_patient.update_layout(
-                height=250, 
-                margin={'t': 30, 'b': 30, 'l': 150, 'r': 50},
-                title=f"Patient {selected_uid}: Result vs Reference Range"
-            )
-            st.plotly_chart(fig_patient, use_container_width=True)
+patient_ids = sorted(df_filtered["patient_id"].dropna().unique().tolist())
+selected_pid = st.selectbox("Select Patient ID", options=patient_ids, key="patient_id_select")
+patient_rows = df_filtered[df_filtered["patient_id"] == selected_pid].copy()
+if not patient_rows.empty:
+    patient_tests = sorted(patient_rows["test_name"].dropna().astype(str).unique().tolist())
+    selected_test = st.selectbox("Select Test", options=patient_tests, key="patient_test_select")
+    selected_test_rows = patient_rows[patient_rows["test_name"].astype(str) == selected_test].copy()
+    if not selected_test_rows.empty:
+        row = selected_test_rows.iloc[0]
+        st.write(f"Patient: {row.get('name', 'N/A')} (ID: {selected_pid})")
+        st.write(f"Age: {row.get('age', 'N/A')} | Gender: {row.get('gender', 'N/A')}")
+        st.write(f"Test: {selected_test}")
+        st.write(f"Target / Status: {row.get('target', 'N/A')}")
+        has_numeric = pd.notna(row.get("result_num")) and pd.notna(row.get("ref_low")) and pd.notna(row.get("ref_high"))
+        if has_numeric:
+            fig_patient = go.Figure(go.Bar(x=["Result", "Ref Low", "Ref High"], y=[row["result_num"], row["ref_low"], row["ref_high"]], marker_color=["orange", "royalblue", "red"], text=[str(row["result_num"]), str(row["ref_low"]), str(row["ref_high"])], textposition="auto"))
+            fig_patient.update_layout(title=f"Patient {selected_pid}: Result vs Reference Range ({selected_test})", xaxis_title="Measurement", yaxis_title="Value", showlegend=False)
+            st.plotly_chart(fig_patient, width="stretch")
         else:
-            st.info("Reference range not available for this test.")
-    else:
-        st.info("Numeric result not available for this test.")
-
-    st.write("All tests for this patient:")
-    st.dataframe(patient_rows[display_cols], use_container_width=True)
+            st.info("Graph only for Numeric values")
+        selected_display_cols = [column for column in DISPLAY_COLS if column in selected_test_rows.columns]
+        st.write("Selected test details:")
+        st.dataframe(selected_test_rows[selected_display_cols], width="stretch", hide_index=True)
 else:
     st.info("No data for selected patient.")
