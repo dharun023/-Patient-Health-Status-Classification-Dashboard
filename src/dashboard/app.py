@@ -188,61 +188,121 @@ col4.metric("Avg Result", f"{avg_result:.2f}" if pd.notna(avg_result) else "N/A"
 # Visualizations
 # -------------------------
 st.subheader(" Visualizations")
-st.markdown("Distribution of Results")
+# -------------------------
+# Distribution of Results
+# -------------------------
+st.markdown("### Distribution of Results")
 
-ALLOWED_TARGET_VALUES = ["Normal", "Low", "High", "Positive", "Negative", "Nil"]
+# Convert raw target labels to consistent display labels.
+TARGET_LABEL_MAP = {
+    "normal": "Normal",
+    "low": "Low",
+    "high": "High",
+    "positive": "Positive",
+    "negative": "Negative",
+    "nil": "Nil",
+}
+
 df_target_chart = df_filtered.copy()
+
+# Normalize spacing and capitalization.
 df_target_chart["target_clean"] = (
-    df_target_chart["target"].astype(str).str.strip()
+    df_target_chart["target"]
+    .astype("string")
+    .str.strip()
+    .str.lower()
 )
+
+# Convert normalized values into clean display labels.
+df_target_chart["target_display"] = df_target_chart[
+    "target_clean"
+].map(TARGET_LABEL_MAP)
+
+# Keep only recognized values.
 df_target_chart = df_target_chart[
-    df_target_chart["target_clean"].isin(ALLOWED_TARGET_VALUES)
+    df_target_chart["target_display"].notna()
 ].copy()
+
+TARGET_ORDER = [
+    "Normal",
+    "Low",
+    "High",
+    "Positive",
+    "Negative",
+    "Nil",
+]
 
 available_target_values = [
     value
-    for value in ALLOWED_TARGET_VALUES
-    if value in df_target_chart["target_clean"].unique()
+    for value in TARGET_ORDER
+    if value in df_target_chart["target_display"].unique()
 ]
 
-selected_targets_for_pie = st.multiselect(
-    "Choose target values to display",
-    options=available_target_values,
-    default=[],
-    key="optimized_target_pie_filter",
-)
-
-if selected_targets_for_pie:
-    target_counts = (
-        df_target_chart[
-            df_target_chart["target_clean"].isin(selected_targets_for_pie)
-        ]["target_clean"]
-        .value_counts()
-        .reindex(selected_targets_for_pie, fill_value=0)
-        .rename_axis("Target")
-        .reset_index(name="Count")
+if not available_target_values:
+    st.warning(
+        "No supported target categories were found after applying the current filters."
     )
 
-    fig_pie = px.pie(
-        target_counts,
-        names="Target",
-        values="Count",
-        title="Distribution of Selected Test Result Categories",
-        color="Target",
-        color_discrete_map={
-            "Normal": "#2E8B57",
-            "Low": "#1E88E5",
-            "High": "#E53935",
-            "Positive": "#D81B60",
-            "Negative": "#43A047",
-            "Nil": "#757575",
-        },
-        hole=0.30,
-    )
-    st.plotly_chart(fig_pie, width="stretch")
+    with st.expander("Show raw target values found in the dataset"):
+        st.write(
+            sorted(
+                df_filtered["target"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .unique()
+                .tolist()
+            )
+        )
+
 else:
-    st.info("Select one or more valid target categories to display the pie chart.")
+    selected_targets_for_pie = st.multiselect(
+        "Choose target values to display",
+        options=available_target_values,
+        default=[],
+        placeholder="Select one or more result categories",
+        key="optimized_target_pie_filter",
+    )
 
+    if not selected_targets_for_pie:
+        st.info("Select one or more target values to display the pie chart.")
+
+    else:
+        pie_data = df_target_chart[
+            df_target_chart["target_display"].isin(
+                selected_targets_for_pie
+            )
+        ].copy()
+
+        target_counts = (
+            pie_data["target_display"]
+            .value_counts()
+            .reindex(selected_targets_for_pie, fill_value=0)
+            .rename_axis("Target")
+            .reset_index(name="Count")
+        )
+
+        fig_pie = px.pie(
+            target_counts,
+            names="Target",
+            values="Count",
+            title="Distribution of Selected Target Values",
+            color="Target",
+            color_discrete_map={
+                "Normal": "#2E8B57",
+                "Low": "#1E88E5",
+                "High": "#E53935",
+                "Positive": "#D81B60",
+                "Negative": "#43A047",
+                "Nil": "#757575",
+            },
+            hole=0.30,
+        )
+
+        st.plotly_chart(
+            fig_pie,
+            width="stretch",
+        )
 
 st.subheader("Numeric Result Distribution")
 if {"test_name", "result_num"}.issubset(df_filtered.columns):
@@ -305,7 +365,7 @@ if {"result_num", "gender"}.issubset(df_filtered.columns):
         st.plotly_chart(fig_gender_avg, width="stretch")
 
 
-st.subheader("Abnormal Rate by Doctor")
+st.subheader("### Abnormal Rate by Doctor")
 if "doctor_name" in df_filtered.columns:
     df_doctor = df_filtered.copy()
     df_doctor["is_abnormal_target"] = (
@@ -342,7 +402,7 @@ else:
 # -------------------------
 # Advanced analytics
 # -------------------------
-st.subheader("🧠 Advanced Analytics & Insights")
+st.subheader(" 🧠 Advanced Analytics & Insights")
 col_g1, col_g2 = st.columns(2)
 
 with col_g1:
