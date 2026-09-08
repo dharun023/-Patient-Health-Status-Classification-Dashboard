@@ -82,23 +82,23 @@ st.caption("Descriptive laboratory analytics dashboard.")
 # -------------------------
 # Sidebar filters
 # -------------------------
-st.sidebar.header("Upload New Data (optional)")
-uploaded = st.sidebar.file_uploader(
-    "Upload CSV or Excel (raw or engineered)",
-    type=["csv", "xlsx"],
-)
+# st.sidebar.header("Upload New Data (optional)")
+# uploaded = st.sidebar.file_uploader(
+#     "Upload CSV or Excel (raw or engineered)",
+#     type=["csv", "xlsx"],
+# )
 
-if uploaded is not None:
-    try:
-        uploaded_df = (
-            pd.read_csv(uploaded)
-            if uploaded.name.lower().endswith(".csv")
-            else pd.read_excel(uploaded)
-        )
-        df = pd.concat([df, uploaded_df], ignore_index=True)
-        st.sidebar.success("New data appended successfully.")
-    except Exception as exc:
-        st.sidebar.error(f"Error loading uploaded file: {exc}")
+# if uploaded is not None:
+#     try:
+#         uploaded_df = (
+#             pd.read_csv(uploaded)
+#             if uploaded.name.lower().endswith(".csv")
+#             else pd.read_excel(uploaded)
+#         )
+#         df = pd.concat([df, uploaded_df], ignore_index=True)
+#         st.sidebar.success("New data appended successfully.")
+#     except Exception as exc:
+#         st.sidebar.error(f"Error loading uploaded file: {exc}")
 
 
 st.sidebar.header("Filters")
@@ -365,7 +365,7 @@ if {"result_num", "gender"}.issubset(df_filtered.columns):
         st.plotly_chart(fig_gender_avg, width="stretch")
 
 
-st.subheader("### Abnormal Rate by Doctor")
+st.subheader(" Abnormal Rate")
 if "doctor_name" in df_filtered.columns:
     df_doctor = df_filtered.copy()
     df_doctor["is_abnormal_target"] = (
@@ -387,14 +387,14 @@ if "doctor_name" in df_filtered.columns:
         doctor_stats["abnormal"] / doctor_stats["total"] * 100
     )
 
-    fig_doctor = px.bar(
-        doctor_stats.sort_values("abnormal_rate", ascending=False),
-        x="doctor_name",
-        y="abnormal_rate",
-        title="Abnormal Rate by Doctor",
-        labels={"abnormal_rate": "Abnormal Rate (%)", "doctor_name": "Doctor"},
-    )
-    st.plotly_chart(fig_doctor, width="stretch")
+    # fig_doctor = px.bar(
+    #     doctor_stats.sort_values("abnormal_rate", ascending=False),
+    #     x="doctor_name",
+    #     y="abnormal_rate",
+    #     title="Abnormal Rate by Doctor",
+    #     labels={"abnormal_rate": "Abnormal Rate (%)", "doctor_name": "Doctor"},
+    # )
+    # st.plotly_chart(fig_doctor, width="stretch")
 else:
     doctor_stats = pd.DataFrame()
     st.info("Doctor data is not available.")
@@ -861,24 +861,26 @@ else:
             st.write(f"Target / Status: {row.get('target', 'N/A')}")
 
             has_numeric = (
-                pd.notna(row.get("result_num"))
-                and pd.notna(row.get("ref_low"))
+                pd.notna(row.get("ref_low"))
+                and pd.notna(row.get("result_num"))
                 and pd.notna(row.get("ref_high"))
             )
 
             if has_numeric:
                 fig_patient = go.Figure(
                     go.Bar(
-                        x=["Result", "Ref Low", "Ref High"],
+                        x=["Ref Low", "Result", "Ref High"],
                         y=[
-                            row["result_num"],
+                            
                             row["ref_low"],
+                            row["result_num"],
                             row["ref_high"],
                         ],
-                        marker_color=["orange", "royalblue", "red"],
+                        marker_color=[ "royalblue", "orange", "red"],
                         text=[
-                            str(row["result_num"]),
+                            
                             str(row["ref_low"]),
+                            str(row["result_num"]),
                             str(row["ref_high"]),
                         ],
                         textposition="auto",
